@@ -1,0 +1,43 @@
+# Node / npm
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+.pnpm-debug.log
+
+# Environment files
+.env
+.env.*.local
+.env.local
+.env.production
+.env.development
+
+# Build outputs
+build/
+dist/
+.tmp/
+
+# Logs
+logs/
+*.log
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# React / CRA specifics
+coverage/
+.craco/
+.cache/
+
+# Misc
+*.pem
+certs/
