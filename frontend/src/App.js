@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import "./App.css";
 
-const API = "http://localhost:4000/api";
+const API = "https://rbac-backend.onrender.com/api";
 
 function App() {
   const [user, setUser] = useState(JSON.parse(localStorage.getItem("user")) || null);
