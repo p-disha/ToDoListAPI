@@ -29,15 +29,17 @@ export default function App() {
   const dragItemIndex = useRef(null);
 
   // ------------------------ AUTH HELPERS ------------------------
-  function saveAuth(access, refresh, userObj) {
-    setAccessToken(access);
-    setRefreshToken(refresh);
-    setUser(userObj);
+  function saveAuth(access, refresh, userData) {
+  userData.id = userData._id || userData.id;
+  setAccessToken(access);
+  setRefreshToken(refresh);
+  setUser(userData);
 
-    localStorage.setItem("accessToken", access);
-    localStorage.setItem("refreshToken", refresh);
-    localStorage.setItem("user", JSON.stringify(userObj));
-  }
+  localStorage.setItem("accessToken", access);
+  localStorage.setItem("refreshToken", refresh);
+  localStorage.setItem("user", JSON.stringify(userData));
+}
+
 
   function logout() {
     localStorage.clear();
