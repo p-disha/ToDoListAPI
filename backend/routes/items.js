@@ -51,18 +51,47 @@ router.get('/', authenticateJWT, async (req, res) => {
     if (status === 'completed') filter.completed = true;
     if (status === 'pending') filter.completed = false;
 
-    let query = Item.find(filter).populate('owner', 'name email');
-    if (sort === 'due') query = query.sort({ dueDate: 1, updatedAt: -1 });
-    else if (sort === 'priority') query = query.sort({ priority: -1, updatedAt: -1 });
-    else query = query.sort({ order: 1, updatedAt: -1 });
+    let pipeline = [
+      { $match: filter },
+      {
+        $addFields: {
+          priorityScore: {
+            $switch: {
+              branches: [
+                { case: { $eq: ["$priority", "high"] }, then: 3 },
+                { case: { $eq: ["$priority", "medium"] }, then: 2 },
+                { case: { $eq: ["$priority", "low"] }, then: 1 },
+              ],
+              default: 0
+            }
+          }
+        }
+      }
+    ];
 
-    const items = await query.exec();
+    if (sort === "priority") pipeline.push({ $sort: { priorityScore: -1, updatedAt: -1 } });
+    else if (sort === "due") pipeline.push({ $sort: { dueDate: 1, updatedAt: -1 } });
+    else pipeline.push({ $sort: { order: 1, updatedAt: -1 } });
+
+    pipeline.push({
+      $lookup: {
+        from: "users",
+        localField: "owner",
+        foreignField: "_id",
+        as: "owner"
+      }
+    });
+
+    pipeline.push({ $unwind: "$owner" });
+
+    const items = await Item.aggregate(pipeline);
     res.json(items);
+
   } catch (err) {
-    console.error("GET /items error:", err);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // Read single
 router.get('/:id', authenticateJWT, async (req, res) => {
@@ -91,7 +120,9 @@ router.put('/:id', authenticateJWT, async (req, res) => {
     if (title !== undefined) item.title = title;
     if (content !== undefined) item.content = content;
     item.dueDate = dueDate ? new Date(dueDate) : undefined;
-    if (priority) item.priority = priority;
+    if (req.body.priority !== undefined) {
+        item.priority = req.body.priority;
+    }
     if (tags !== undefined) item.tags = Array.isArray(tags) ? tags : String(tags).split(',').map(t => t.trim()).filter(Boolean);
 
     await item.save();

@@ -14,7 +14,10 @@ const itemSchema = new mongoose.Schema({
   priority: { type: String, enum: ['low','medium','high'], default: 'medium' },
   tags: [{ type: String }],
   order: { type: Number, default: 0 },
-  subtasks: [subtaskSchema]
+  subtasks: {
+    type: [subtaskSchema],
+    default: []
+  }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Item', itemSchema);
