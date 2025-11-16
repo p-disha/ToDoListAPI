@@ -28,24 +28,24 @@ export default function App() {
   // Drag & drop
   const dragItemIndex = useRef(null);
 
-  // ------------------------ AUTH HELPERS ------------------------
+  // normalize user id when saving auth
   function saveAuth(access, refresh, userData) {
-  userData.id = userData._id || userData.id;
-  setAccessToken(access);
-  setRefreshToken(refresh);
-  setUser(userData);
+    userData.id = userData._id || userData.id;
+    setAccessToken(access);
+    setRefreshToken(refresh);
+    setUser(userData);
 
-  localStorage.setItem("accessToken", access);
-  localStorage.setItem("refreshToken", refresh);
-  localStorage.setItem("user", JSON.stringify(userData));
-}
-
+    localStorage.setItem("accessToken", access);
+    localStorage.setItem("refreshToken", refresh);
+    localStorage.setItem("user", JSON.stringify(userData));
+  }
 
   function logout() {
     localStorage.clear();
     setAccessToken(null);
     setRefreshToken(null);
     setUser(null);
+    setItems([]);
   }
 
   async function refreshAccessToken() {
@@ -96,7 +96,7 @@ export default function App() {
 
     const data = await res.json();
     if (res.ok) saveAuth(data.accessToken, data.refreshToken, data.user);
-    else alert(data.error || data.message);
+    else alert(data.error || data.message || "Register failed");
   }
 
   async function login(e) {
@@ -111,28 +111,62 @@ export default function App() {
 
     const data = await res.json();
     if (res.ok) saveAuth(data.accessToken, data.refreshToken, data.user);
-    else alert(data.error || data.message);
+    else alert(data.error || data.message || "Login failed");
   }
 
   // ------------------------ CRUD ------------------------
   useEffect(() => {
     if (accessToken) fetchItems();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken, query, filter, sort]);
+
+  // normalize incoming item from backend so UI can rely on fields
+  function normalizeItem(raw) {
+    return {
+      _id: raw._id || raw.id,
+      title: raw.title || "",
+      content: raw.content || "",
+      owner: raw.owner || {},
+      completed: raw.completed === true || raw.completed === "true" || false,
+      dueDate: raw.dueDate || null,
+      priority: raw.priority || "medium",
+      tags: Array.isArray(raw.tags) ? raw.tags : (raw.tags ? String(raw.tags).split(",").map(t => t.trim()).filter(Boolean) : []),
+      subtasks: Array.isArray(raw.subtasks) ? raw.subtasks : [],
+      order: typeof raw.order === "number" ? raw.order : Number(raw.order || 0),
+      createdAt: raw.createdAt,
+      updatedAt: raw.updatedAt
+    };
+  }
 
   async function fetchItems() {
     setLoading(true);
 
     const q = encodeURIComponent(query || "");
-
     const res = await apiFetch(
       `${API}/items?q=${q}&status=${filter === "all" ? "" : filter}&sort=${sort}`
     );
 
-    const data = await res.json();
-    if (res.ok) setItems(data);
+    // try-catch for JSON parse safety
+    let data = [];
+    try {
+      data = await res.json();
+    } catch (err) {
+      console.error("Failed to parse items response", err);
+      setLoading(false);
+      return;
+    }
+
+    if (res.ok && Array.isArray(data)) {
+      const normalized = data.map(normalizeItem);
+      setItems(normalized);
+    } else {
+      console.error("Failed to load items", data);
+    }
+
     setLoading(false);
   }
 
+  // create and then add returned item to UI (no full refetch)
   async function createItem(body) {
     const res = await apiFetch(`${API}/items`, {
       method: "POST",
@@ -140,7 +174,13 @@ export default function App() {
       body: JSON.stringify(body),
     });
 
-    if (res.ok) fetchItems();
+    const data = await res.json().catch(()=>null);
+    if (res.ok && data) {
+      const n = normalizeItem(data);
+      setItems(prev => [...prev, n].sort((a,b)=> (a.order - b.order)));
+    } else {
+      alert(data?.error || data?.message || "Create failed");
+    }
   }
 
   async function updateItem(id, body) {
@@ -150,36 +190,69 @@ export default function App() {
       body: JSON.stringify(body),
     });
 
-    if (res.ok) fetchItems();
+    const data = await res.json().catch(()=>null);
+    if (res.ok && data) {
+      const n = normalizeItem(data);
+      setItems(prev => prev.map(it => it._id === n._id ? n : it));
+    } else {
+      alert(data?.error || data?.message || "Update failed");
+    }
   }
 
+  // toggle complete and update local state using returned item
   async function toggleComplete(id) {
     const res = await apiFetch(`${API}/items/${id}/complete`, { method: "PATCH" });
-    if (res.ok) fetchItems();
+    const data = await res.json().catch(()=>null);
+    if (res.ok && data) {
+      const n = normalizeItem(data);
+      setItems(prev => prev.map(it => it._id === n._id ? n : it));
+    } else {
+      console.error("Toggle complete failed", data);
+    }
   }
 
   async function deleteItem(id) {
     if (!window.confirm("Delete this item?")) return;
     const res = await apiFetch(`${API}/items/${id}`, { method: "DELETE" });
-    if (res.ok) fetchItems();
+    const data = await res.json().catch(()=>null);
+    if (res.ok) {
+      setItems(prev => prev.filter(it => it._id !== id));
+    } else {
+      alert(data?.error || data?.message || "Delete failed");
+    }
   }
 
   // ------------------------ SUBTASKS ------------------------
+  // add subtask and update the specific item in local state using returned object
   async function addSubtask(id, title) {
-    if (!title.trim()) return;
+    if (!title || !title.trim()) return;
     const res = await apiFetch(`${API}/items/${id}/subtasks`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title }),
     });
-    if (res.ok) fetchItems();
+
+    const data = await res.json().catch(()=>null);
+    if (res.ok && data) {
+      const n = normalizeItem(data);
+      setItems(prev => prev.map(it => it._id === n._id ? n : it));
+    } else {
+      console.error("Add subtask failed", data);
+    }
   }
 
   async function toggleSubtask(id, subtaskId) {
     const res = await apiFetch(`${API}/items/${id}/subtasks/${subtaskId}`, {
       method: "PATCH",
     });
-    if (res.ok) fetchItems();
+
+    const data = await res.json().catch(()=>null);
+    if (res.ok && data) {
+      const n = normalizeItem(data);
+      setItems(prev => prev.map(it => it._id === n._id ? n : it));
+    } else {
+      console.error("Toggle subtask failed", data);
+    }
   }
 
   // ------------------------ DRAG & DROP ------------------------
@@ -193,26 +266,30 @@ export default function App() {
 
   async function drop(e, index) {
     e.preventDefault();
-
     const from = dragItemIndex.current;
-    if (from === null) return;
+    if (from === null || from === undefined) return;
 
     const updated = [...items];
     const [moved] = updated.splice(from, 1);
     updated.splice(index, 0, moved);
 
-    // update UI immediately
+    // update UI immediately and normalize order as numbers
     const reordered = updated.map((it, idx) => ({ ...it, order: idx }));
     setItems(reordered);
 
-    // persist order
-    await apiFetch(`${API}/items/reorder`, {
+    // persist order (ensure numeric)
+    const payload = reordered.map(it => ({ id: it._id, order: Number(it.order) }));
+    const res = await apiFetch(`${API}/items/reorder`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        order: reordered.map((it) => ({ id: it._id, order: it.order })),
-      }),
+      body: JSON.stringify({ order: payload }),
     });
+
+    if (!res.ok) {
+      console.error("Reorder persist failed");
+      // optionally reload items to recover
+      fetchItems();
+    }
 
     dragItemIndex.current = null;
   }
@@ -233,6 +310,7 @@ export default function App() {
     setEditing(null);
   }
 
+  // Save modal: use returned item to update UI
   async function saveModal(e) {
     e.preventDefault();
 
@@ -241,12 +319,15 @@ export default function App() {
       title: data.title,
       content: data.content,
       dueDate: data.dueDate || null,
-      priority: data.priority,
-      tags: data.tags,
+      priority: data.priority || "medium",
+      tags: data.tags
     };
 
-    if (editing) await updateItem(editing._id, payload);
-    else await createItem(payload);
+    if (editing) {
+      await updateItem(editing._id, payload);
+    } else {
+      await createItem(payload);
+    }
 
     closeModal();
   }
@@ -323,6 +404,7 @@ export default function App() {
       </div>
 
       {/* Items List */}
+      {loading ? <p>Loading...</p> : (
       <ul className="items">
         {items
           .filter((it) => (collapseCompleted ? !it.completed : true))
@@ -338,14 +420,14 @@ export default function App() {
               <div className="item-header">
                 <input
                   type="checkbox"
-                  checked={it.completed}
+                  checked={!!it.completed}
                   onChange={() => toggleComplete(it._id)}
                 />
 
                 <div>
                   <strong>{it.title}</strong>
                   <div className="meta">
-                    [{it.priority}] — {it.tags?.join(", ") || "no tags"}
+                    [{it.priority}] — {it.tags?.length ? it.tags.join(", ") : "no tags"}
                   </div>
                   <div className="dates">
                     Created: {fmt(it.createdAt)} | Updated: {fmt(it.updatedAt)} | Due:{" "}
@@ -362,24 +444,24 @@ export default function App() {
               {/* Subtasks */}
               <div className="subtasks">
                 <ul>
-                  {it.subtasks?.map((st) => (
-                    <li key={st._id}>
+                  {it.subtasks && it.subtasks.length ? it.subtasks.map((st) => (
+                    <li key={st._id || st.id || `${it._id}-sub-${st.title}`}>
                       <label>
                         <input
                           type="checkbox"
-                          checked={st.completed}
-                          onChange={() => toggleSubtask(it._id, st._id)}
+                          checked={!!st.completed}
+                          onChange={() => toggleSubtask(it._id, st._id || st.id)}
                         />
                         <span className={st.completed ? "done" : ""}>{st.title}</span>
                       </label>
                     </li>
-                  ))}
+                  )) : <li><small>No subtasks</small></li>}
                 </ul>
 
                 <form
                   onSubmit={(e) => {
                     e.preventDefault();
-                    const v = e.target.sub.value;
+                    const v = e.target.elements.sub?.value;
                     addSubtask(it._id, v);
                     e.target.reset();
                   }}
@@ -390,6 +472,7 @@ export default function App() {
             </li>
           ))}
       </ul>
+      )}
 
       {/* Modal */}
       {modalOpen && (
@@ -398,12 +481,12 @@ export default function App() {
             <h3>{editing ? "Edit Task" : "New Task"}</h3>
             <form onSubmit={saveModal}>
               <label>Title</label>
-              <input name="title" defaultValue={editing?.title} required />
+              <input name="title" defaultValue={editing?.title || ""} required />
 
               <label>Description</label>
               <textarea
                 name="content"
-                defaultValue={editing?.content}
+                defaultValue={editing?.content || ""}
                 placeholder="Optional description..."
               />
 
@@ -428,7 +511,7 @@ export default function App() {
               <label>Tags (comma-separated)</label>
               <input
                 name="tags"
-                defaultValue={editing?.tags?.join(", ") || ""}
+                defaultValue={editing?.tags ? editing.tags.join(", ") : ""}
               />
 
               <div className="modal-actions">
