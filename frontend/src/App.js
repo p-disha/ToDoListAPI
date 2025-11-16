@@ -1,50 +1,58 @@
 import React, { useEffect, useState, useRef } from "react";
 import "./App.css";
 
-// IMPORTANT: Your deployed backend URL
+// API base
 const API = "https://todolistapi-fc8p.onrender.com/api";
 
 export default function App() {
-  // ------------------------ AUTH STATE ------------------------
-  const [user, setUser] = useState(JSON.parse(localStorage.getItem("user")) || null);
+  // auth
+  const [user, setUser] = useState(() => {
+    const raw = localStorage.getItem("user");
+    if (!raw) return null;
+    try {
+      const u = JSON.parse(raw);
+      u.id = u._id || u.id || null;
+      return u;
+    } catch {
+      return null;
+    }
+  });
   const [accessToken, setAccessToken] = useState(localStorage.getItem("accessToken"));
   const [refreshToken, setRefreshToken] = useState(localStorage.getItem("refreshToken"));
 
-  // ------------------------ DATA STATE ------------------------
+  // data + ui
   const [items, setItems] = useState([]);
-
-  // ------------------------ UI STATE ------------------------
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("all"); // all | pending | completed
-  const [sort, setSort] = useState("order");   // order | due | priority
+  const [filter, setFilter] = useState("all");
+  const [sort, setSort] = useState("order");
   const [collapseCompleted, setCollapseCompleted] = useState(false);
 
-  // Modal (create/edit)
+  // modal/editing
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
-  const modalForm = useRef();
 
-  // Drag & drop
+  // drag/drop
   const dragItemIndex = useRef(null);
 
-  // normalize user id when saving auth
+  // ----------------------------- auth helpers -----------------------------
   function saveAuth(access, refresh, userData) {
-    userData.id = userData._id || userData.id;
+    // Normalize user id to always use `id`
+    userData.id = userData._id || userData.id || null;
+    setUser(userData);
     setAccessToken(access);
     setRefreshToken(refresh);
-    setUser(userData);
 
+    localStorage.setItem("user", JSON.stringify(userData));
     localStorage.setItem("accessToken", access);
     localStorage.setItem("refreshToken", refresh);
-    localStorage.setItem("user", JSON.stringify(userData));
   }
 
   function logout() {
     localStorage.clear();
+    setUser(null);
     setAccessToken(null);
     setRefreshToken(null);
-    setUser(null);
     setItems([]);
   }
 
@@ -57,9 +65,8 @@ export default function App() {
       body: JSON.stringify({ refreshToken }),
     });
 
-    const data = await res.json();
-
-    if (res.ok && data.accessToken) {
+    const data = await res.json().catch(() => null);
+    if (res.ok && data?.accessToken) {
       localStorage.setItem("accessToken", data.accessToken);
       setAccessToken(data.accessToken);
       return data.accessToken;
@@ -73,60 +80,29 @@ export default function App() {
     if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
 
     const res = await fetch(url, { ...options, headers });
-
     if (res.status === 401 && retry) {
       const newToken = await refreshAccessToken();
       if (!newToken) return res;
       return apiFetch(url, options, false);
     }
-
     return res;
   }
 
-  // ------------------------ AUTH ACTIONS ------------------------
-  async function register(e) {
-    e.preventDefault();
-    const form = Object.fromEntries(new FormData(e.target));
-
-    const res = await fetch(`${API.replace("/api", "")}/api/auth/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
-    });
-
-    const data = await res.json();
-    if (res.ok) saveAuth(data.accessToken, data.refreshToken, data.user);
-    else alert(data.error || data.message || "Register failed");
-  }
-
-  async function login(e) {
-    e.preventDefault();
-    const form = Object.fromEntries(new FormData(e.target));
-
-    const res = await fetch(`${API.replace("/api", "")}/api/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
-    });
-
-    const data = await res.json();
-    if (res.ok) saveAuth(data.accessToken, data.refreshToken, data.user);
-    else alert(data.error || data.message || "Login failed");
-  }
-
-  // ------------------------ CRUD ------------------------
-  useEffect(() => {
-    if (accessToken) fetchItems();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessToken, query, filter, sort]);
-
-  // normalize incoming item from backend so UI can rely on fields
+  // ----------------------------- normalize server item -----------------------------
   function normalizeItem(raw) {
+    // raw may already be populated or not
+    const owner = raw.owner || {};
+    const ownerId = owner._id || owner.id || owner;
+
     return {
       _id: raw._id || raw.id,
       title: raw.title || "",
       content: raw.content || "",
-      owner: raw.owner || {},
+      owner: {
+        _id: ownerId,
+        name: owner.name || (ownerId ? "Unknown" : null),
+        email: owner.email || null
+      },
       completed: raw.completed === true || raw.completed === "true" || false,
       dueDate: raw.dueDate || null,
       priority: raw.priority || "medium",
@@ -138,48 +114,69 @@ export default function App() {
     };
   }
 
+  // ----------------------------- load items -----------------------------
+  useEffect(() => {
+    if (accessToken) fetchItems();
+    // eslint-disable-next-line
+  }, [accessToken, query, filter, sort]);
+
   async function fetchItems() {
     setLoading(true);
-
     const q = encodeURIComponent(query || "");
-    const res = await apiFetch(
-      `${API}/items?q=${q}&status=${filter === "all" ? "" : filter}&sort=${sort}`
-    );
-
-    // try-catch for JSON parse safety
+    const res = await apiFetch(`${API}/items?q=${q}&status=${filter === "all" ? "" : filter}&sort=${sort}`);
     let data = [];
     try {
       data = await res.json();
     } catch (err) {
-      console.error("Failed to parse items response", err);
-      setLoading(false);
-      return;
+      console.error("Invalid JSON from /items", err);
     }
-
     if (res.ok && Array.isArray(data)) {
-      const normalized = data.map(normalizeItem);
-      setItems(normalized);
+      setItems(data.map(normalizeItem));
     } else {
       console.error("Failed to load items", data);
     }
-
     setLoading(false);
   }
 
-  // create and then add returned item to UI (no full refetch)
+  // ----------------------------- auth actions -----------------------------
+  async function register(e) {
+    e.preventDefault();
+    const form = Object.fromEntries(new FormData(e.target));
+    const res = await fetch(`${API.replace("/api", "")}/api/auth/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    const data = await res.json().catch(()=>null);
+    if (res.ok && data) saveAuth(data.accessToken, data.refreshToken, data.user);
+    else alert(data?.message || "Register failed");
+  }
+
+  async function login(e) {
+    e.preventDefault();
+    const form = Object.fromEntries(new FormData(e.target));
+    const res = await fetch(`${API.replace("/api", "")}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form),
+    });
+    const data = await res.json().catch(()=>null);
+    if (res.ok && data) saveAuth(data.accessToken, data.refreshToken, data.user);
+    else alert(data?.message || "Login failed");
+  }
+
+  // ----------------------------- CRUD actions -----------------------------
   async function createItem(body) {
     const res = await apiFetch(`${API}/items`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-
     const data = await res.json().catch(()=>null);
     if (res.ok && data) {
-      const n = normalizeItem(data);
-      setItems(prev => [...prev, n].sort((a,b)=> (a.order - b.order)));
+      setItems(prev => [...prev, normalizeItem(data)].sort((a,b)=> a.order - b.order));
     } else {
-      alert(data?.error || data?.message || "Create failed");
+      alert(data?.message || "Create failed");
     }
   }
 
@@ -189,25 +186,23 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-
     const data = await res.json().catch(()=>null);
     if (res.ok && data) {
-      const n = normalizeItem(data);
-      setItems(prev => prev.map(it => it._id === n._id ? n : it));
+      setItems(prev => prev.map(it => it._id === (data._id || data.id) ? normalizeItem(data) : it));
     } else {
-      alert(data?.error || data?.message || "Update failed");
+      alert(data?.message || "Update failed");
     }
   }
 
-  // toggle complete and update local state using returned item
+  // toggle complete (backend enforces owner/admin)
   async function toggleComplete(id) {
     const res = await apiFetch(`${API}/items/${id}/complete`, { method: "PATCH" });
     const data = await res.json().catch(()=>null);
     if (res.ok && data) {
-      const n = normalizeItem(data);
-      setItems(prev => prev.map(it => it._id === n._id ? n : it));
+      setItems(prev => prev.map(it => it._id === (data._id || data.id) ? normalizeItem(data) : it));
     } else {
-      console.error("Toggle complete failed", data);
+      // 403 returns message; show it
+      alert(data?.message || "Toggle failed");
     }
   }
 
@@ -218,12 +213,11 @@ export default function App() {
     if (res.ok) {
       setItems(prev => prev.filter(it => it._id !== id));
     } else {
-      alert(data?.error || data?.message || "Delete failed");
+      alert(data?.message || "Delete failed");
     }
   }
 
-  // ------------------------ SUBTASKS ------------------------
-  // add subtask and update the specific item in local state using returned object
+  // ----------------------------- subtasks -----------------------------
   async function addSubtask(id, title) {
     if (!title || !title.trim()) return;
     const res = await apiFetch(`${API}/items/${id}/subtasks`, {
@@ -231,89 +225,57 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title }),
     });
-
     const data = await res.json().catch(()=>null);
     if (res.ok && data) {
-      const n = normalizeItem(data);
-      setItems(prev => prev.map(it => it._id === n._id ? n : it));
+      setItems(prev => prev.map(it => it._id === (data._id || data.id) ? normalizeItem(data) : it));
     } else {
-      console.error("Add subtask failed", data);
+      alert(data?.message || "Add subtask failed");
     }
   }
 
-  async function toggleSubtask(id, subtaskId) {
-    const res = await apiFetch(`${API}/items/${id}/subtasks/${subtaskId}`, {
-      method: "PATCH",
-    });
-
+  async function toggleSubtask(itemId, subtaskId) {
+    const res = await apiFetch(`${API}/items/${itemId}/subtasks/${subtaskId}`, { method: "PATCH" });
     const data = await res.json().catch(()=>null);
     if (res.ok && data) {
-      const n = normalizeItem(data);
-      setItems(prev => prev.map(it => it._id === n._id ? n : it));
+      setItems(prev => prev.map(it => it._id === (data._id || data.id) ? normalizeItem(data) : it));
     } else {
-      console.error("Toggle subtask failed", data);
+      alert(data?.message || "Toggle subtask failed");
     }
   }
 
-  // ------------------------ DRAG & DROP ------------------------
-  function dragStart(e, index) {
-    dragItemIndex.current = index;
-  }
-
-  function dragOver(e) {
-    e.preventDefault();
-  }
+  // ----------------------------- reorder -----------------------------
+  function dragStart(e, index) { dragItemIndex.current = index; }
+  function dragOver(e) { e.preventDefault(); }
 
   async function drop(e, index) {
     e.preventDefault();
     const from = dragItemIndex.current;
     if (from === null || from === undefined) return;
-
     const updated = [...items];
     const [moved] = updated.splice(from, 1);
     updated.splice(index, 0, moved);
-
-    // update UI immediately and normalize order as numbers
     const reordered = updated.map((it, idx) => ({ ...it, order: idx }));
     setItems(reordered);
-
-    // persist order (ensure numeric)
     const payload = reordered.map(it => ({ id: it._id, order: Number(it.order) }));
     const res = await apiFetch(`${API}/items/reorder`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ order: payload }),
     });
-
     if (!res.ok) {
-      console.error("Reorder persist failed");
-      // optionally reload items to recover
+      console.error("Reorder failed");
       fetchItems();
     }
-
     dragItemIndex.current = null;
   }
 
-  // ------------------------ MODAL ------------------------
-  function openCreateModal() {
-    setEditing(null);
-    setModalOpen(true);
-  }
+  // ----------------------------- modal -----------------------------
+  function openCreateModal() { setEditing(null); setModalOpen(true); }
+  function openEditModal(it) { setEditing(it); setModalOpen(true); }
+  function closeModal() { setModalOpen(false); setEditing(null); }
 
-  function openEditModal(it) {
-    setEditing(it);
-    setModalOpen(true);
-  }
-
-  function closeModal() {
-    setModalOpen(false);
-    setEditing(null);
-  }
-
-  // Save modal: use returned item to update UI
   async function saveModal(e) {
     e.preventDefault();
-
     const data = Object.fromEntries(new FormData(e.target));
     const payload = {
       title: data.title,
@@ -322,44 +284,44 @@ export default function App() {
       priority: data.priority || "medium",
       tags: data.tags
     };
-
-    if (editing) {
-      await updateItem(editing._id, payload);
-    } else {
-      await createItem(payload);
-    }
-
+    if (editing) await updateItem(editing._id, payload);
+    else await createItem(payload);
     closeModal();
   }
 
   function fmt(d) {
     if (!d) return "-";
-    try {
-      return new Date(d).toLocaleString();
-    } catch {
-      return d;
-    }
+    try { return new Date(d).toLocaleString(); } catch { return d; }
   }
 
-  // ------------------------ AUTH SCREEN ------------------------
+  // ----------------------------- ownership helpers -----------------------------
+  function isOwner(it) {
+    if (!user) return false;
+    const ownerId = it?.owner?._id || it?.owner?.id || it?.owner || null;
+    return String(ownerId) === String(user.id);
+  }
+  function canModify(it) {
+    return user?.role === "admin" || isOwner(it);
+  }
+
+  // ----------------------------- UI -----------------------------
   if (!accessToken) {
     return (
-      <div className="auth-container">
-        <h1>Login/Register</h1>
-
-        <div className="auth-box">
+      <div style={{ padding: 20 }}>
+        <h2>Auth</h2>
+        <div style={{ display: "flex", gap: 20 }}>
           <form onSubmit={login}>
             <h3>Login</h3>
-            <input name="email" placeholder="Email" required />
-            <input name="password" type="password" placeholder="Password" required />
+            <input name="email" placeholder="email" required /><br/>
+            <input name="password" placeholder="password" type="password" required /><br/>
             <button>Login</button>
           </form>
 
           <form onSubmit={register}>
             <h3>Register</h3>
-            <input name="name" placeholder="Name" required />
-            <input name="email" placeholder="Email" required />
-            <input name="password" type="password" placeholder="Password" required />
+            <input name="name" placeholder="name" required /><br/>
+            <input name="email" placeholder="email" required /><br/>
+            <input name="password" placeholder="password" type="password" required /><br/>
             <button>Register</button>
           </form>
         </div>
@@ -367,182 +329,140 @@ export default function App() {
     );
   }
 
-  // ------------------------ MAIN APP UI ------------------------
   return (
-    <div className="app">
-      <header className="top">
-        <h2>
-          Hi, {user?.name} <small>({user?.role})</small>
-        </h2>
+    <div style={{ padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <h2>Hi, {user?.name} ({user?.role})</h2>
         <button onClick={logout}>Logout</button>
-      </header>
+      </div>
 
-      {/* Controls */}
-      <div className="controls">
+      <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
         <button onClick={openCreateModal}>+ Add Task</button>
-        <button onClick={() => setCollapseCompleted(!collapseCompleted)}>
-          Toggle Collapse Completed
-        </button>
-
-        <input
-          placeholder="Search..."
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-
-        <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+        <button onClick={() => setCollapseCompleted(!collapseCompleted)}>Toggle Collapse Completed</button>
+        <input placeholder="Search..." value={query} onChange={e=>setQuery(e.target.value)} />
+        <select value={filter} onChange={e=>setFilter(e.target.value)}>
           <option value="all">All</option>
           <option value="pending">Pending</option>
           <option value="completed">Completed</option>
         </select>
-
-        <select value={sort} onChange={(e) => setSort(e.target.value)}>
+        <select value={sort} onChange={e=>setSort(e.target.value)}>
           <option value="order">Manual</option>
           <option value="due">Due Date</option>
           <option value="priority">Priority</option>
         </select>
       </div>
 
-      {/* Items List */}
       {loading ? <p>Loading...</p> : (
-      <ul className="items">
-        {items
-          .filter((it) => (collapseCompleted ? !it.completed : true))
-          .map((it, idx) => (
-            <li
-              key={it._id}
-              draggable
-              onDragStart={(e) => dragStart(e, idx)}
-              onDragOver={dragOver}
-              onDrop={(e) => drop(e, idx)}
-              className={`item ${it.completed ? "done" : ""}`}
-            >
-              <div className="item-header">
-                <input
-                  type="checkbox"
-                  checked={!!it.completed}
-                  onChange={() => toggleComplete(it._id)}
-                />
-
-                <div>
-                  <strong>{it.title}</strong>
-                  <div className="meta">
-                    [{it.priority}] — {it.tags?.length ? it.tags.join(", ") : "no tags"}
-                  </div>
-                  <div className="dates">
-                    Created: {fmt(it.createdAt)} | Updated: {fmt(it.updatedAt)} | Due:{" "}
-                    {fmt(it.dueDate)}
+        <ul style={{ listStyle: "none", padding: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+          {items.filter(it => collapseCompleted ? !it.completed : true).map((it, idx) => (
+            <li key={it._id} draggable onDragStart={e=>dragStart(e, idx)} onDragOver={dragOver} onDrop={e=>drop(e, idx)}
+                style={{ padding: 12, borderRadius: 6, background: it.completed ? "#eef6ee" : "#fff", border: "1px solid #ddd" }}>
+              <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                  <input
+                    type="checkbox"
+                    checked={!!it.completed}
+                    disabled={!canModify(it)}
+                    onChange={() => canModify(it) ? toggleComplete(it._id) : null}
+                    style={{ marginTop: 6 }}
+                  />
+                  <div>
+                    <strong>{it.title}</strong>
+                    <div style={{ color: "#666", fontSize: 12 }}>
+                      [{it.priority}] — {it.tags?.length ? it.tags.join(", ") : "no tags"}
+                    </div>
+                    <div style={{ color: "#888", fontSize: 12, marginTop: 4 }}>
+                      Created: {fmt(it.createdAt)} | Updated: {fmt(it.updatedAt)} | Due: {fmt(it.dueDate)}
+                    </div>
                   </div>
                 </div>
 
-                <div className="actions">
-                  <button onClick={() => openEditModal(it)}>Edit</button>
-                  <button onClick={() => deleteItem(it._id)}>Delete</button>
-                </div>
+                {(canModify(it)) ? (
+                  <div>
+                    <button onClick={()=>openEditModal(it)}>Edit</button>
+                    <button onClick={()=>deleteItem(it._id)}>Delete</button>
+                  </div>
+                ) : (
+                  <div style={{ opacity: 0.6, fontSize: 12, color: "#333" }}>Read-only</div>
+                )}
               </div>
 
-              {/* Subtasks */}
-              <div className="subtasks">
-                <ul>
-                  {it.subtasks && it.subtasks.length ? it.subtasks.map((st) => (
+              {/* subtasks */}
+              <div style={{ marginTop: 8 }}>
+                <ul style={{ listStyle: "none", paddingLeft: 0 }}>
+                  {(it.subtasks && it.subtasks.length) ? it.subtasks.map(st => (
                     <li key={st._id || st.id || `${it._id}-sub-${st.title}`}>
                       <label>
-                        <input
-                          type="checkbox"
-                          checked={!!st.completed}
-                          onChange={() => toggleSubtask(it._id, st._id || st.id)}
-                        />
-                        <span className={st.completed ? "done" : ""}>{st.title}</span>
+                        <input type="checkbox" checked={!!st.completed}
+                          disabled={!canModify(it)}
+                          onChange={() => canModify(it) ? toggleSubtask(it._id, st._id || st.id) : null}
+                        />{" "}
+                        <span style={{ textDecoration: st.completed ? "line-through" : "none" }}>{st.title}</span>
                       </label>
                     </li>
-                  )) : <li><small>No subtasks</small></li>}
+                  )) : <li style={{ color:"#666" }}><small>No subtasks</small></li>}
                 </ul>
 
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    const v = e.target.elements.sub?.value;
-                    addSubtask(it._id, v);
-                    e.target.reset();
-                  }}
-                >
-                  <input name="sub" placeholder="Add subtask..." />
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  const val = e.target.elements.sub?.value;
+                  if (!val) return;
+                  if (!canModify(it)) { alert("Only owner or admin can add subtasks"); return; }
+                  addSubtask(it._id, val);
+                  e.target.reset();
+                }}>
+                  <input name="sub" placeholder="Add subtask..." disabled={!canModify(it)} />
                 </form>
               </div>
             </li>
           ))}
-      </ul>
+        </ul>
       )}
 
-      {/* Modal */}
+      {/* modal */}
       {modalOpen && (
-        <div className="modal">
-          <div className="modal-box">
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", justifyContent:"center", alignItems:"center" }}>
+          <div style={{ background:"#fff", padding:20, borderRadius:8, width:400 }}>
             <h3>{editing ? "Edit Task" : "New Task"}</h3>
             <form onSubmit={saveModal}>
-              <label>Title</label>
-              <input name="title" defaultValue={editing?.title || ""} required />
+              <div>
+                <label>Title</label><br/>
+                <input name="title" defaultValue={editing?.title || ""} required />
+              </div>
 
-              <label>Description</label>
-              <textarea
-                name="content"
-                defaultValue={editing?.content || ""}
-                placeholder="Optional description..."
-              />
+              <div>
+                <label>Description</label><br/>
+                <textarea name="content" defaultValue={editing?.content || ""} />
+              </div>
 
-              <label>Due Date</label>
-              <input
-                type="datetime-local"
-                name="dueDate"
-                defaultValue={
-                  editing?.dueDate
-                    ? new Date(editing.dueDate).toISOString().slice(0, 16)
-                    : ""
-                }
-              />
+              <div>
+                <label>Due Date</label><br/>
+                <input type="datetime-local" name="dueDate"
+                  defaultValue={editing?.dueDate ? new Date(editing.dueDate).toISOString().slice(0,16) : ""} />
+              </div>
 
-              <label>Priority</label>
-              <select name="priority" defaultValue={editing?.priority || "medium"}>
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-              </select>
+              <div>
+                <label>Priority</label><br/>
+                <select name="priority" defaultValue={editing?.priority || "medium"}>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
 
-              <label>Tags (comma-separated)</label>
-              <input
-                name="tags"
-                defaultValue={editing?.tags ? editing.tags.join(", ") : ""}
-              />
+              <div>
+                <label>Tags (comma-separated)</label><br/>
+                <input name="tags" defaultValue={editing?.tags ? editing.tags.join(", ") : ""} />
+              </div>
 
-              <div className="modal-actions">
+              <div style={{ marginTop: 12, display:"flex", justifyContent:"flex-end", gap:8 }}>
                 <button type="submit">Save</button>
-                <button type="button" onClick={closeModal}>
-                  Cancel
-                </button>
+                <button type="button" onClick={closeModal}>Cancel</button>
               </div>
             </form>
           </div>
         </div>
       )}
-
-      <style>{`
-        body { font-family: system-ui, Arial; }
-        .top { display:flex; justify-content:space-between; margin-bottom:20px; }
-        .controls { display:flex; gap:10px; margin-bottom:20px; flex-wrap:wrap; }
-        .items { list-style:none; padding:0; display:flex; flex-direction:column; gap:12px; }
-        .item { padding:12px; border-radius:6px; background:#fff; border:1px solid #ddd; }
-        .item.done { background:#eef6ee; }
-        .item-header { display:flex; gap:12px; justify-content:space-between; }
-        .actions button { margin-left:6px; }
-        .meta { color:#666; font-size:12px; }
-        .dates { color:#888; font-size:12px; margin-top:4px; }
-        .subtasks ul { list-style:none; padding-left:0; }
-        .auth-container { padding:20px; }
-        .auth-box { display:flex; gap:20px; }
-        .modal { position:fixed; inset:0; background:rgba(0,0,0,0.5); display:flex; justify-content:center; align-items:center; }
-        .modal-box { background:white; padding:20px; border-radius:8px; width:400px; max-width:90%; }
-        .modal-actions { margin-top:12px; display:flex; justify-content:flex-end; gap:10px; }
-      `}</style>
     </div>
   );
 }
