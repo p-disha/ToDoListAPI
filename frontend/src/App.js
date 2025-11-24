@@ -280,7 +280,8 @@ export default function App() {
     const payload = {
       title: data.title,
       content: data.content,
-      dueDate: data.dueDate || null,
+      // Always convert datetime-local consistently
+      dueDate: data.dueDate ? new Date(data.dueDate + ":00").toISOString() : null,
       priority: data.priority || "medium",
       tags: data.tags
     };
@@ -372,7 +373,7 @@ export default function App() {
                       [{it.priority}] — {it.tags?.length ? it.tags.join(", ") : "no tags"}
                     </div>
                     <div style={{ color: "#888", fontSize: 12, marginTop: 4 }}>
-                      Created: {fmt(it.createdAt)} | Updated: {fmt(it.updatedAt)} | Due: {fmt(it.dueDate)}
+                      Created: {fmt(it.createdAt)} | Updated: {fmt(it.updatedAt)} | Due: {it.dueDate ? new Date(it.dueDate).toLocaleString() : "-"}
                     </div>
                   </div>
                 </div>
