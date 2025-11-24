@@ -32,7 +32,10 @@ router.post("/", authenticateJWT, async (req, res) => {
       content,
       owner: userId,
       priority: priority || "medium",
-      dueDate: dueDate ? new Date(dueDate) : null,
+      if (dueDate) {
+        const local = new Date(dueDate);  
+        item.dueDate = new Date(local.getTime() - local.getTimezoneOffset() * 60000);
+      },
       tags: Array.isArray(tags)
         ? tags.filter(Boolean)
         : tags
@@ -139,7 +142,10 @@ router.put("/:id", authenticateJWT, async (req, res) => {
 
     if (title !== undefined) item.title = title;
     if (content !== undefined) item.content = content;
-    item.dueDate = dueDate ? new Date(dueDate) : null;
+    if (dueDate) {
+      const local = new Date(dueDate);  
+      item.dueDate = new Date(local.getTime() - local.getTimezoneOffset() * 60000);
+    }
     if (priority !== undefined) item.priority = priority;
 
     if (tags !== undefined) {
